@@ -12,9 +12,10 @@
 #include <vector>
 #include <ros/ros.h>
 
-#include "opencv/cv.h"
-#include "opencv/highgui.h"
+#include "opencv2/opencv.hpp"
+#include "opencv2/highgui.hpp"
 #include "cv_bridge/cv_bridge.h"
+#include <opencv2/calib3d.hpp>
 #include "sensor_msgs/CameraInfo.h"
 #include "sensor_msgs/Image.h"
 #include "geometry_msgs/PoseStamped.h"
@@ -33,9 +34,9 @@ class ChessBoardDetector {
 
 public:
 	struct ChessBoard {
-		CvSize griddims; ///< number of squares
-		vector<CvPoint3D32f> grid3d;
-		vector<CvPoint2D32f> corners;
+		cv::Size griddims; ///< number of squares
+		vector<cv::Point3f> grid3d;
+		vector<cv::Point2f> corners;
 		double cellwidth;
 		double cellheight;
 		geometry_msgs::PoseStamped pose;
@@ -50,9 +51,9 @@ public:
 
 	int display, verbose;
 	ros::Time lasttime;
-	CvMat *intrinsic_matrix; // intrinsic matrices
+	cv::Mat intrinsic_matrix; // intrinsic matrices
 	boost::mutex mutexcalib;
-	IplImage* frame;
+	cv::Mat frame;
 
 	bool publishTF;
 
@@ -68,7 +69,7 @@ public:
 	 *  Constructor.
 	 */
 	ChessBoardDetector() :
-			intrinsic_matrix(NULL), frame(NULL), publishTF(false), _node_private("~") {
+		publishTF(false), _node_private("~") {
 
 		_node_private.param("display", display, 1);
 		_node_private.param("verbose", verbose, 1);
@@ -89,7 +90,7 @@ public:
 			ROS_ERROR("Param: grid x size must be greater than 2");
 			return;
 		}
-		
+
 		if (!_node_private.getParam("grid_y_size", dimy)) {
 			ROS_ERROR("Missing parameter: grid_y_size");
 			return;
@@ -111,7 +112,7 @@ public:
 		}
 
 		ROS_INFO("Board: %d X %d, %f x %f;",dimx,dimy,fRectSize[0],fRectSize[1]);
-		chessboard.griddims = cvSize(dimx, dimy);
+		chessboard.griddims = cv::Size(dimx, dimy);
 		chessboard.cellwidth = fRectSize[0];
 		chessboard.cellheight = fRectSize[0];
 
@@ -119,15 +120,14 @@ public:
 		int j = 0;
 		for (int y = 0; y < dimy; ++y)
 			for (int x = 0; x < dimx; ++x)
-				chessboard.grid3d[j++] = cvPoint3D32f(x * fRectSize[0],
-						y * fRectSize[1], 0);
+				chessboard.grid3d[j++] = cv::Point3f(x * fRectSize[0],
+					y * fRectSize[1], 0);
 
 		if (display) {
 			cvNamedWindow("Chess Board Detector", CV_WINDOW_AUTOSIZE);
 		}
 
 		posePublisher = _node_pub.advertise<geometry_msgs::PoseStamped>("/"+name+"_pose", 1);
-
 
 		this->camInfoSubscriber = _node_pub.subscribe("camera_info", 1,
 				&ChessBoardDetector::cameraInfoCallback, this);
@@ -136,16 +136,9 @@ public:
 		this->imageSubscriber = it.subscribe("image_mono", 1,
 				&ChessBoardDetector::imageCallback, this);
 		ROS_INFO("Ok");
-
-
-
 	}
 
 	virtual ~ChessBoardDetector() {
-		if (frame)
-			cvReleaseImage(&frame);
-		if (this->intrinsic_matrix)
-			cvReleaseMat(&this->intrinsic_matrix);
 		this->camInfoSubscriber.shutdown();
 		this->imageSubscriber.shutdown();
 	}
@@ -184,72 +177,53 @@ public:
 	bool detectChessBoard(const sensor_msgs::ImageConstPtr &imagemsg,
 			const sensor_msgs::CameraInfo& camInfoMsg) {
 
-		if (this->intrinsic_matrix == NULL)
-			this->intrinsic_matrix = cvCreateMat(3, 3, CV_32FC1);
-
-
+		if(this->intrinsic_matrix.empty())
+			this->intrinsic_matrix = cv::Mat(3, 3, CV_32FC1);
 
 		for (int i = 0; i < 3; ++i)
 			for (int j = 0; j < 3; ++j)
-				this->intrinsic_matrix->data.fl[3 * i + j] = camInfoMsg.P[4 * i + j];
+				intrinsic_matrix.row(i).at<float>(j) = camInfoMsg.P[4 * i + j];
 
 		cv_bridge::CvImageConstPtr image_grey = cv_bridge::toCvShare(imagemsg, "mono8");
-//		if (!_cvbridge.fromImage(imagemsg, "mono8")) {
-//			ROS_ERROR("failed to get image");
-//			return false;
-//		}
 
-		IplImage pimggray = IplImage(image_grey->image);
-		if (display) {
-			// copy the raw image
-			if (frame != NULL
-					&& (frame->width != (int) imagemsg->width
-							|| frame->height != (int) imagemsg->height)) {
-				cvReleaseImage(&frame);
-				frame = NULL;
-			}
+		cv::Mat pimggray = image_grey->image;
 
-			if (frame == NULL)
-				frame = cvCreateImage(cvSize(imagemsg->width, imagemsg->height),
-						IPL_DEPTH_8U, 3);
+		if(display){
+			if(frame.empty())
+        		frame = cv::Mat(imagemsg->height, imagemsg->width, CV_8U, 3);
 
-			cvCvtColor(&pimggray, frame, CV_GRAY2RGB);
+			cv::cvtColor(pimggray, frame, CV_GRAY2RGB);
 		}
 
-		chessboard.corners.resize(200);
-		int ncorners;
-		int allfound = cvFindChessboardCorners(&pimggray, chessboard.griddims,
-				&chessboard.corners[0], &ncorners, CV_CALIB_CB_ADAPTIVE_THRESH);
-		chessboard.corners.resize(ncorners);
+		int allfound = cv::findChessboardCorners(pimggray, chessboard.griddims,
+				chessboard.corners, CV_CALIB_CB_ADAPTIVE_THRESH);
 
 		if (display) {
-			cvDrawChessboardCorners(frame,  chessboard.griddims, &chessboard.corners[0], ncorners, allfound);
-			cvShowImage("Chess Board Detector", frame);
-			cvWaitKey(10);
+			cv::drawChessboardCorners(frame,  chessboard.griddims, chessboard.corners, allfound);
+			cv::imshow("Chess Board Detector", frame);
+			cv::waitKey(10);
 		}
 
-		if (!allfound || ncorners != (int) chessboard.grid3d.size()){
+		if (!allfound || chessboard.corners.size() != (int) chessboard.grid3d.size()){
 			return false;
 		}
 
 		// remove any corners that are close to the border
 		const int borderthresh = 30;
 
-		for (int j = 0; j < ncorners; ++j) {
+		for (int j = 0; j < chessboard.corners.size(); ++j) {
 			int x = chessboard.corners[j].x;
 			int y = chessboard.corners[j].y;
-			if (x < borderthresh || x > pimggray.width - borderthresh
+			if (x < borderthresh || x > pimggray.size().width - borderthresh
 					|| y < borderthresh
-					|| y > pimggray.height - borderthresh) {
+					|| y > pimggray.size().height - borderthresh) {
 				allfound = 0;
 				return false;
 			}
 		}
 
 		if (allfound) {
-			cvFindCornerSubPix(&pimggray, &chessboard.corners[0],
-					chessboard.corners.size(), cvSize(5, 5), cvSize(-1, -1),
-					cvTermCriteria(CV_TERMCRIT_ITER, 20, 1e-2));
+			cv::cornerSubPix(pimggray, chessboard.corners, cv::Size(5, 5), cv::Size(-1, -1),cv::TermCriteria(cv::TermCriteria::MAX_ITER, 20, 1e-2));
 
 			chessboard.pose.pose = calculateTransformation(chessboard.corners, chessboard.grid3d, chessboard);
 
@@ -266,7 +240,7 @@ public:
 	/**
 	 *  Return the position of the chess board in the camera frame.
 	 */
-	geometry_msgs::Pose calculateTransformation(const vector<CvPoint2D32f> &imgpts, const vector<CvPoint3D32f> &objpts, ChessBoard &cb) {
+		geometry_msgs::Pose calculateTransformation(const vector<cv::Point2f> &imgpts, const vector<cv::Point3f> &objpts, ChessBoard &cb) {
 
 		geometry_msgs::Pose pose;
 
@@ -279,7 +253,7 @@ public:
 		float zero=0.0;
 		cv::Mat_<float> distortion(4, 1, zero);
 
-		cv::solvePnP(board_points, image_points, cv::Mat(this->intrinsic_matrix), distortion, R, T);
+		cv::solvePnP(board_points, image_points, this->intrinsic_matrix, distortion, R, T);
 
 
 		pose.position.x=T(0);
