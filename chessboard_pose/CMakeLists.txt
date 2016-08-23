@@ -86,9 +86,9 @@ find_package(OpenCV REQUIRED)
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
 #  INCLUDE_DIRS include
-#  LIBRARIES chessboard_pose
-#  CATKIN_DEPENDS cv_bridge geometry_msgs image_transport opencv roscpp sensor_msgs tf visualization_msgs
-#  DEPENDS system_lib
+  LIBRARIES chessboard_pose
+  CATKIN_DEPENDS cv_bridge geometry_msgs image_transport roscpp sensor_msgs tf visualization_msgs
+  DEPENDS opencv
 )
 
 ###########
